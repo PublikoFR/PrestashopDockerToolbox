@@ -523,9 +523,11 @@ run_menu() {
                         if [[ $result -eq 0 ]]; then
                             # Success
                             last_status="${action_name} - Done!"
+                            sleep 2
                         elif [[ $result -eq 2 ]]; then
                             # Cancelled
                             last_status="${action_name} - Cancelled"
+                            sleep 2
                         else
                             # Error: wait for key press
                             echo ""
