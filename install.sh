@@ -5,10 +5,10 @@ set -e
 # Script info
 # =============================================================================
 SCRIPT_NAME="Publiko Module Installer"
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.2.1"
 
 # Repository URL for auto-update (raw GitHub)
-UPDATE_REPO_URL="https://raw.githubusercontent.com/publiko/prestashop-module-installer/main"
+UPDATE_REPO_URL="https://raw.githubusercontent.com/publiko/PrestashopModuleInstaller/master"
 
 # =============================================================================
 # Configuration - Load from .env.install
