@@ -5,7 +5,7 @@ set -e
 # Script info
 # =============================================================================
 SCRIPT_NAME="Publiko Module Installer"
-SCRIPT_VERSION="1.2.1"
+SCRIPT_VERSION="1.2.2"
 
 # GitHub repository for auto-update (owner/repo format)
 GITHUB_REPO="PublikoFR/PrestashopModuleInstaller"
@@ -329,34 +329,34 @@ do_uninstall() {
 # Composite actions
 # =============================================================================
 action_install_reinstall() {
-    sync_files
-    do_install
+    sync_files || return 1
+    do_install || return 1
     clear_cache
 }
 
 action_uninstall() {
-    do_uninstall
+    do_uninstall || return 1
     clear_cache
 }
 
 action_uninstall_reinstall() {
-    do_uninstall
-    sync_files
-    do_install
+    do_uninstall || return 1
+    sync_files || return 1
+    do_install || return 1
     clear_cache
 }
 
 action_delete() {
-    do_uninstall
-    delete_files
+    do_uninstall || return 1
+    delete_files || return 1
     clear_cache
 }
 
 action_delete_reinstall() {
-    do_uninstall
-    delete_files
-    sync_files
-    do_install
+    do_uninstall || return 1
+    delete_files || return 1
+    sync_files || return 1
+    do_install || return 1
     clear_cache
 }
 
