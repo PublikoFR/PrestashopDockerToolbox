@@ -4,11 +4,11 @@ set -e
 # =============================================================================
 # Script info
 # =============================================================================
-SCRIPT_NAME="Publiko Module Installer"
-SCRIPT_VERSION="1.2.2"
+SCRIPT_NAME="Prestashop Docker Toolbox"
+SCRIPT_VERSION="1.2.3"
 
 # GitHub repository for auto-update (owner/repo format)
-GITHUB_REPO="PublikoFR/PrestashopModuleInstaller"
+GITHUB_REPO="PublikoFR/PrestashopDockerToolbox"
 
 # =============================================================================
 # Configuration - Load from .env.install
@@ -27,14 +27,30 @@ fi
 # Validate required variables
 [[ -z "${PRESTASHOP_PATH:-}" ]] && echo -e "\033[0;31m✗ Error:\033[0m PRESTASHOP_PATH not defined in .env.install" && exit 1
 [[ -z "${DOCKER_CONTAINER:-}" ]] && echo -e "\033[0;31m✗ Error:\033[0m DOCKER_CONTAINER not defined in .env.install" && exit 1
-[[ -z "${MODULE_NAME:-}" ]] && echo -e "\033[0;31m✗ Error:\033[0m MODULE_NAME not defined in .env.install" && exit 1
+
+# Backwards compatibility: MODULE_NAME -> NAME
+[[ -z "${NAME:-}" && -n "${MODULE_NAME:-}" ]] && NAME="${MODULE_NAME}"
+[[ -z "${NAME:-}" ]] && echo -e "\033[0;31m✗ Error:\033[0m NAME not defined in .env.install" && exit 1
+
+# Default TYPE to module for backwards compatibility
+[[ -z "${TYPE:-}" ]] && TYPE="module"
+[[ "$TYPE" != "module" && "$TYPE" != "theme" ]] && echo -e "\033[0;31m✗ Error:\033[0m TYPE must be 'module' or 'theme'" && exit 1
 # =============================================================================
 
-SOURCE_DIR="${SCRIPT_DIR}/${MODULE_NAME}"
-TARGET_DIR="${PRESTASHOP_PATH}/modules/${MODULE_NAME}"
+# Set paths based on TYPE
+SOURCE_DIR="${SCRIPT_DIR}/${NAME}"
+if [[ "$TYPE" == "module" ]]; then
+    TARGET_DIR="${PRESTASHOP_PATH}/modules/${NAME}"
+    ITEM_VERSION=$(grep "this->version" "${SOURCE_DIR}/${NAME}.php" 2>/dev/null | head -1 | grep -oP "'[0-9]+\.[0-9]+\.[0-9]+'" | tr -d "'" || echo "1.0.0")
+    TYPE_LABEL="Module"
+else
+    TARGET_DIR="${PRESTASHOP_PATH}/themes/${NAME}"
+    ITEM_VERSION=$(grep "version:" "${SOURCE_DIR}/config/theme.yml" 2>/dev/null | head -1 | sed 's/.*: *//' || echo "1.0.0")
+    TYPE_LABEL="Theme"
+fi
+
 BACKUP_DIR="${SCRIPT_DIR}/.backups"
 MAX_BACKUPS=5
-MODULE_VERSION=$(grep "this->version" "${SOURCE_DIR}/${MODULE_NAME}.php" 2>/dev/null | head -1 | grep -oP "'[0-9]+\.[0-9]+\.[0-9]+'" | tr -d "'" || echo "1.0.0")
 
 # Colors
 RED='\033[0;31m'
@@ -63,7 +79,11 @@ info_msg() {
 }
 
 check_prerequisites() {
-    [[ ! -d "${SOURCE_DIR}" ]] && error_msg "Source folder ${MODULE_NAME}/ not found"
+    if [[ "$TYPE" == "module" ]]; then
+        [[ ! -d "${SOURCE_DIR}" ]] && error_msg "Source folder ${NAME}/ not found"
+    else
+        [[ ! -f "${SOURCE_DIR}/config/theme.yml" ]] && error_msg "config/theme.yml not found in ${NAME}/"
+    fi
     [[ ! -d "${PRESTASHOP_PATH}" ]] && error_msg "PrestaShop not found: ${PRESTASHOP_PATH}"
     docker ps --format '{{.Names}}' | grep -q "^${DOCKER_CONTAINER}$" || error_msg "Docker container '${DOCKER_CONTAINER}' not running"
 }
@@ -217,7 +237,7 @@ action_restore() {
         echo ""
         echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
         echo -e "${CYAN}║${NC}  ${BOLD}${SCRIPT_NAME}${NC} v${YELLOW}${SCRIPT_VERSION}${NC}"
-        echo -e "${CYAN}║${NC}  Module: ${BOLD}${MODULE_NAME}${NC} v${YELLOW}${MODULE_VERSION}${NC}"
+        echo -e "${CYAN}║${NC}  ${TYPE_LABEL}: ${BOLD}${NAME}${NC} v${YELLOW}${ITEM_VERSION}${NC}"
         echo -e "${CYAN}║${NC}  ${DIM}Restore a backup${NC}"
         echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
         echo ""
@@ -243,8 +263,8 @@ action_restore() {
             fi
             read -rsn1 -t 0.3 k2
             case "${k1}${k2}" in
-                '[A') [[ $selected -gt 0 ]] && selected=$((selected - 1)) || true ;;
-                '[B') [[ $selected -lt $((${#backups[@]} - 1)) ]] && selected=$((selected + 1)) || true ;;
+                '[A') [[ $selected -gt 0 ]] && selected=$((selected - 1)) || selected=$((${#backups[@]} - 1)) ;;
+                '[B') [[ $selected -lt $((${#backups[@]} - 1)) ]] && selected=$((selected + 1)) || selected=0 ;;
             esac
             continue
         fi
@@ -281,26 +301,8 @@ action_restore() {
 }
 
 # =============================================================================
-# Basic actions
+# Common actions
 # =============================================================================
-sync_files() {
-    backup_target
-    info_msg "Synchronizing files..."
-    mkdir -p "${TARGET_DIR}"
-    cp -r "${SOURCE_DIR}/"* "${TARGET_DIR}/"
-    success_msg "Files copied to ${TARGET_DIR}"
-}
-
-delete_files() {
-    info_msg "Deleting module files..."
-    if [[ -d "${TARGET_DIR}" ]]; then
-        rm -rf "${TARGET_DIR:?}/"*
-        success_msg "Files deleted"
-    else
-        info_msg "Folder does not exist, nothing to delete"
-    fi
-}
-
 PS_EXEC="docker exec -e SERVER_PORT=80 -e HTTP_HOST=localhost ${DOCKER_CONTAINER}"
 PS_CONSOLE="php -d memory_limit=1G /var/www/html/bin/console"
 
@@ -308,56 +310,6 @@ clear_cache() {
     info_msg "Clearing cache..."
     docker exec ${DOCKER_CONTAINER} sh -c "rm -rf /var/www/html/var/cache/* && mkdir -p /var/www/html/var/cache/dev && chown -R www-data:www-data /var/www/html/var/cache && chmod -R 775 /var/www/html/var/cache" 2>/dev/null || true
     success_msg "Cache cleared"
-}
-
-do_install() {
-    info_msg "Installing module..."
-    if ${PS_EXEC} ${PS_CONSOLE} prestashop:module install ${MODULE_NAME} 2>&1 | grep -q "réussi\|successful"; then
-        success_msg "Module installed"
-    else
-        error_msg "Installation failed"
-    fi
-}
-
-do_uninstall() {
-    info_msg "Uninstalling module..."
-    ${PS_EXEC} ${PS_CONSOLE} prestashop:module uninstall ${MODULE_NAME} 2>&1 | grep -q "réussi\|successful" || true
-    success_msg "Module uninstalled"
-}
-
-# =============================================================================
-# Composite actions
-# =============================================================================
-action_install_reinstall() {
-    sync_files || return 1
-    do_install || return 1
-    clear_cache
-}
-
-action_uninstall() {
-    do_uninstall || return 1
-    clear_cache
-}
-
-action_uninstall_reinstall() {
-    do_uninstall || return 1
-    sync_files || return 1
-    do_install || return 1
-    clear_cache
-}
-
-action_delete() {
-    do_uninstall || return 1
-    delete_files || return 1
-    clear_cache
-}
-
-action_delete_reinstall() {
-    do_uninstall || return 1
-    delete_files || return 1
-    sync_files || return 1
-    do_install || return 1
-    clear_cache
 }
 
 action_clear_cache() {
@@ -375,30 +327,32 @@ action_restart_docker() {
 }
 
 action_build_zip() {
-    local zip_name="${MODULE_NAME}_v${MODULE_VERSION}.zip"
+    local zip_name="${NAME}_v${ITEM_VERSION}.zip"
     local temp_dir=$(mktemp -d)
 
     rm -f "${SCRIPT_DIR}/${zip_name}"
 
     info_msg "Copying files..."
-    cp -r "${SOURCE_DIR}" "${temp_dir}/${MODULE_NAME}"
+    cp -r "${SOURCE_DIR}" "${temp_dir}/${NAME}"
 
     info_msg "Cleaning up..."
-    find "${temp_dir}/${MODULE_NAME}" -name ".git*" -exec rm -rf {} + 2>/dev/null || true
-    find "${temp_dir}/${MODULE_NAME}" -name ".claude*" -exec rm -rf {} + 2>/dev/null || true
-    find "${temp_dir}/${MODULE_NAME}" -name ".grepai*" -exec rm -rf {} + 2>/dev/null || true
-    find "${temp_dir}/${MODULE_NAME}" -name "CLAUDE.md" -exec rm -f {} + 2>/dev/null || true
-    find "${temp_dir}/${MODULE_NAME}" -name "TODO.md" -exec rm -f {} + 2>/dev/null || true
-    find "${temp_dir}/${MODULE_NAME}" -name "*.zip" -exec rm -f {} + 2>/dev/null || true
-    find "${temp_dir}/${MODULE_NAME}" -name ".DS_Store" -exec rm -f {} + 2>/dev/null || true
-    find "${temp_dir}/${MODULE_NAME}" -name "*.swp" -exec rm -f {} + 2>/dev/null || true
-    find "${temp_dir}/${MODULE_NAME}" -name "*~" -exec rm -f {} + 2>/dev/null || true
-    rm -rf "${temp_dir}/${MODULE_NAME}/vendor" 2>/dev/null || true
-    rm -rf "${temp_dir}/${MODULE_NAME}/node_modules" 2>/dev/null || true
+    find "${temp_dir}/${NAME}" -name ".git*" -exec rm -rf {} + 2>/dev/null || true
+    find "${temp_dir}/${NAME}" -name ".claude*" -exec rm -rf {} + 2>/dev/null || true
+    find "${temp_dir}/${NAME}" -name ".grepai*" -exec rm -rf {} + 2>/dev/null || true
+    find "${temp_dir}/${NAME}" -name "CLAUDE.md" -exec rm -f {} + 2>/dev/null || true
+    find "${temp_dir}/${NAME}" -name "TODO.md" -exec rm -f {} + 2>/dev/null || true
+    find "${temp_dir}/${NAME}" -name "*.zip" -exec rm -f {} + 2>/dev/null || true
+    find "${temp_dir}/${NAME}" -name "*.sh" -exec rm -f {} + 2>/dev/null || true
+    find "${temp_dir}/${NAME}" -name ".DS_Store" -exec rm -f {} + 2>/dev/null || true
+    find "${temp_dir}/${NAME}" -name "*.swp" -exec rm -f {} + 2>/dev/null || true
+    find "${temp_dir}/${NAME}" -name "*~" -exec rm -f {} + 2>/dev/null || true
+    rm -rf "${temp_dir}/${NAME}/vendor" 2>/dev/null || true
+    rm -rf "${temp_dir}/${NAME}/node_modules" 2>/dev/null || true
+    rm -rf "${temp_dir}/${NAME}/.idea" 2>/dev/null || true
 
     info_msg "Creating archive..."
     cd "${temp_dir}"
-    zip -rq "${SCRIPT_DIR}/${zip_name}" "${MODULE_NAME}"
+    zip -rq "${SCRIPT_DIR}/${zip_name}" "${NAME}"
     cd "${SCRIPT_DIR}"
 
     rm -rf "${temp_dir}"
@@ -408,21 +362,181 @@ action_build_zip() {
 }
 
 # =============================================================================
+# Module-specific actions
+# =============================================================================
+sync_files_module() {
+    backup_target
+    info_msg "Synchronizing files..."
+    mkdir -p "${TARGET_DIR}"
+    cp -r "${SOURCE_DIR}/"* "${TARGET_DIR}/"
+    success_msg "Files copied to ${TARGET_DIR}"
+}
+
+delete_files_module() {
+    info_msg "Deleting module files..."
+    if [[ -d "${TARGET_DIR}" ]]; then
+        rm -rf "${TARGET_DIR:?}/"*
+        success_msg "Files deleted"
+    else
+        info_msg "Folder does not exist, nothing to delete"
+    fi
+}
+
+do_install_module() {
+    info_msg "Installing module..."
+    if ${PS_EXEC} ${PS_CONSOLE} prestashop:module install ${NAME} 2>&1 | grep -q "réussi\|successful"; then
+        success_msg "Module installed"
+    else
+        error_msg "Installation failed"
+    fi
+}
+
+do_uninstall_module() {
+    info_msg "Uninstalling module..."
+    ${PS_EXEC} ${PS_CONSOLE} prestashop:module uninstall ${NAME} 2>&1 | grep -q "réussi\|successful" || true
+    success_msg "Module uninstalled"
+}
+
+# Module composite actions
+action_module_install() {
+    sync_files_module || return 1
+    do_install_module || return 1
+    clear_cache
+}
+
+action_module_uninstall() {
+    do_uninstall_module || return 1
+    clear_cache
+}
+
+action_module_uninstall_reinstall() {
+    do_uninstall_module || return 1
+    sync_files_module || return 1
+    do_install_module || return 1
+    clear_cache
+}
+
+action_module_delete() {
+    do_uninstall_module || return 1
+    delete_files_module || return 1
+    clear_cache
+}
+
+action_module_delete_reinstall() {
+    do_uninstall_module || return 1
+    delete_files_module || return 1
+    sync_files_module || return 1
+    do_install_module || return 1
+    clear_cache
+}
+
+# =============================================================================
+# Theme-specific actions
+# =============================================================================
+sync_files_theme() {
+    backup_target
+    info_msg "Synchronizing files..."
+    mkdir -p "${TARGET_DIR}"
+
+    rsync -av "${SOURCE_DIR}/" "${TARGET_DIR}/" \
+        --exclude '.git' \
+        --exclude '.gitignore' \
+        --exclude '.grepai' \
+        --exclude '.idea' \
+        --exclude '.claude' \
+        --exclude 'CLAUDE.md' \
+        --exclude '*.sh' \
+        --exclude '*.zip' \
+        --exclude 'node_modules' \
+        --exclude '.DS_Store' \
+        --exclude 'assets/cache/*' \
+        --delete
+
+    success_msg "Files synced to ${TARGET_DIR}"
+}
+
+delete_files_theme() {
+    info_msg "Deleting theme files..."
+    if [[ -d "${TARGET_DIR}" ]]; then
+        rm -rf "${TARGET_DIR:?}"
+        success_msg "Theme folder deleted"
+    else
+        info_msg "Folder does not exist, nothing to delete"
+    fi
+}
+
+do_enable_theme() {
+    info_msg "Enabling theme..."
+    if ${PS_EXEC} ${PS_CONSOLE} prestashop:theme:enable ${NAME} 2>&1 | grep -qi "enabled\|activé\|success"; then
+        success_msg "Theme enabled"
+    else
+        # Check if already active
+        local result=$(${PS_EXEC} ${PS_CONSOLE} prestashop:theme:enable ${NAME} 2>&1 || true)
+        if echo "$result" | grep -qi "already"; then
+            success_msg "Theme already active"
+        else
+            error_msg "Enable failed"
+        fi
+    fi
+}
+
+# Theme composite actions
+action_theme_sync() {
+    sync_files_theme || return 1
+    clear_cache
+}
+
+action_theme_sync_enable() {
+    sync_files_theme || return 1
+    do_enable_theme || return 1
+    clear_cache
+}
+
+action_theme_delete() {
+    delete_files_theme || return 1
+    clear_cache
+}
+
+action_theme_delete_reinstall() {
+    delete_files_theme || return 1
+    sync_files_theme || return 1
+    do_enable_theme || return 1
+    clear_cache
+}
+
+# =============================================================================
 # Interactive menu
 # =============================================================================
-MENU_OPTIONS=(
-    "Install / Reinstall"
-    "Uninstall"
-    "Uninstall then Reinstall"
-    "Delete"
-    "Delete then Reinstall"
-    "Restore a backup"
-    "Clear cache"
-    "Restart Docker Containers"
-    "Build ZIP"
-    "Update script"
-    "Quit"
-)
+if [[ "$TYPE" == "module" ]]; then
+    MENU_OPTIONS=(
+        "Install / Reinstall"
+        "Uninstall"
+        "Uninstall then Reinstall"
+        "Delete"
+        "Delete then Reinstall"
+        "Restore a backup"
+        "Clear cache"
+        "Restart Docker Containers"
+        "Build ZIP"
+        "Update script"
+        "Quit"
+    )
+    MENU_QUIT_INDEX=10
+else
+    MENU_OPTIONS=(
+        "Sync files"
+        "Sync + Enable theme"
+        "Delete theme"
+        "Delete + Reinstall"
+        "Restore a backup"
+        "Clear cache"
+        "Restart Docker Containers"
+        "Build ZIP"
+        "Update script"
+        "Quit"
+    )
+    MENU_QUIT_INDEX=9
+fi
 
 print_menu() {
     local selected=$1
@@ -431,7 +545,7 @@ print_menu() {
     echo ""
     echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║${NC}  ${BOLD}${SCRIPT_NAME}${NC} v${YELLOW}${SCRIPT_VERSION}${NC}"
-    echo -e "${CYAN}║${NC}  Module: ${BOLD}${MODULE_NAME}${NC} v${YELLOW}${MODULE_VERSION}${NC}"
+    echo -e "${CYAN}║${NC}  ${TYPE_LABEL}: ${BOLD}${NAME}${NC} v${YELLOW}${ITEM_VERSION}${NC}"
     if [[ -n "$status_msg" ]]; then
         echo -e "${CYAN}║${NC}  ${GREEN}✓${NC} ${status_msg}"
     fi
@@ -448,6 +562,37 @@ print_menu() {
 
     echo ""
     echo -e "${DIM}  ↑↓ Navigate  ⏎ Select  Esc/q Quit${NC}"
+}
+
+execute_menu_action() {
+    local selected=$1
+
+    if [[ "$TYPE" == "module" ]]; then
+        case $selected in
+            0) action_module_install ;;
+            1) action_module_uninstall ;;
+            2) action_module_uninstall_reinstall ;;
+            3) action_module_delete ;;
+            4) action_module_delete_reinstall ;;
+            5) action_restore ;;
+            6) action_clear_cache ;;
+            7) action_restart_docker ;;
+            8) action_build_zip ;;
+            9) action_update_script ;;
+        esac
+    else
+        case $selected in
+            0) action_theme_sync ;;
+            1) action_theme_sync_enable ;;
+            2) action_theme_delete ;;
+            3) action_theme_delete_reinstall ;;
+            4) action_restore ;;
+            5) action_clear_cache ;;
+            6) action_restart_docker ;;
+            7) action_build_zip ;;
+            8) action_update_script ;;
+        esac
+    fi
 }
 
 run_menu() {
@@ -481,8 +626,8 @@ run_menu() {
             fi
             read -rsn1 -t 0.3 k2
             case "${k1}${k2}" in
-                '[A') [[ $selected -gt 0 ]] && selected=$((selected - 1)) || true ;;
-                '[B') [[ $selected -lt $((${#MENU_OPTIONS[@]} - 1)) ]] && selected=$((selected + 1)) || true ;;
+                '[A') [[ $selected -gt 0 ]] && selected=$((selected - 1)) || selected=$((${#MENU_OPTIONS[@]} - 1)) ;;
+                '[B') [[ $selected -lt $((${#MENU_OPTIONS[@]} - 1)) ]] && selected=$((selected + 1)) || selected=0 ;;
             esac
             continue
         fi
@@ -492,52 +637,43 @@ run_menu() {
                 local action_name="${MENU_OPTIONS[$selected]}"
                 local result=0
 
-                case $selected in
-                    10) tput cnorm 2>/dev/null || true; clear; echo -e "${DIM}Goodbye!${NC}"; exit 0 ;;
-                    *)
-                        tput cnorm 2>/dev/null || true
-                        clear
-                        echo ""
-                        echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-                        echo -e "${CYAN}║${NC}  ${BOLD}${action_name}${NC}"
-                        echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
-                        echo ""
+                if [[ $selected -eq $MENU_QUIT_INDEX ]]; then
+                    tput cnorm 2>/dev/null || true
+                    clear
+                    echo -e "${DIM}Goodbye!${NC}"
+                    exit 0
+                fi
 
-                        # Execute action and capture result
-                        set +e
-                        case $selected in
-                            0) action_install_reinstall ;;
-                            1) action_uninstall ;;
-                            2) action_uninstall_reinstall ;;
-                            3) action_delete ;;
-                            4) action_delete_reinstall ;;
-                            5) action_restore ;;
-                            6) action_clear_cache ;;
-                            7) action_restart_docker ;;
-                            8) action_build_zip ;;
-                            9) action_update_script ;;
-                        esac
-                        result=$?
-                        set -e
+                tput cnorm 2>/dev/null || true
+                clear
+                echo ""
+                echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
+                echo -e "${CYAN}║${NC}  ${BOLD}${action_name}${NC}"
+                echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
+                echo ""
 
-                        if [[ $result -eq 0 ]]; then
-                            # Success
-                            last_status="${action_name} - Done!"
-                            sleep 2
-                        elif [[ $result -eq 2 ]]; then
-                            # Cancelled
-                            last_status="${action_name} - Cancelled"
-                            sleep 2
-                        else
-                            # Error: wait for key press
-                            echo ""
-                            echo -e "${DIM}Press any key to continue...${NC}"
-                            read -rsn1
-                            last_status=""
-                        fi
-                        tput civis 2>/dev/null || true
-                        ;;
-                esac
+                # Execute action and capture result
+                set +e
+                execute_menu_action $selected
+                result=$?
+                set -e
+
+                if [[ $result -eq 0 ]]; then
+                    # Success
+                    last_status="${action_name} - Done!"
+                    sleep 2
+                elif [[ $result -eq 2 ]]; then
+                    # Cancelled
+                    last_status="${action_name} - Cancelled"
+                    sleep 2
+                else
+                    # Error: wait for key press
+                    echo ""
+                    echo -e "${DIM}Press any key to continue...${NC}"
+                    read -rsn1
+                    last_status=""
+                fi
+                tput civis 2>/dev/null || true
                 ;;
             'q'|'Q')  # Quit
                 tput cnorm 2>/dev/null || true
@@ -546,10 +682,10 @@ run_menu() {
                 exit 0
                 ;;
             'k')  # vim: up
-                [[ $selected -gt 0 ]] && selected=$((selected - 1)) || true
+                [[ $selected -gt 0 ]] && selected=$((selected - 1)) || selected=$((${#MENU_OPTIONS[@]} - 1))
                 ;;
             'j')  # vim: down
-                [[ $selected -lt $((${#MENU_OPTIONS[@]} - 1)) ]] && selected=$((selected + 1)) || true
+                [[ $selected -lt $((${#MENU_OPTIONS[@]} - 1)) ]] && selected=$((selected + 1)) || selected=0
                 ;;
             [1-9])  # Direct selection by number
                 local num=$((key - 1))
@@ -562,20 +698,30 @@ run_menu() {
 show_help() {
     echo -e "${CYAN}Usage:${NC} ./install.sh [option]"
     echo ""
+    echo -e "Current mode: ${BOLD}${TYPE}${NC}"
+    echo ""
     echo -e "Without option: launches interactive menu"
     echo ""
-    echo -e "CLI Options:"
-    echo -e "  ${GREEN}--install${NC}      Install / Reinstall"
-    echo -e "  ${GREEN}--uninstall${NC}    Uninstall"
-    echo -e "  ${GREEN}--reinstall${NC}    Uninstall then Reinstall"
-    echo -e "  ${GREEN}--delete${NC}       Delete"
-    echo -e "  ${GREEN}--reset${NC}        Delete then Reinstall"
-    echo -e "  ${GREEN}--restore${NC}      Restore a backup"
-    echo -e "  ${GREEN}--cache${NC}        Clear cache"
-    echo -e "  ${GREEN}--restart${NC}      Restart Docker Containers"
-    echo -e "  ${GREEN}--zip${NC}          Build zip archive"
+    if [[ "$TYPE" == "module" ]]; then
+        echo -e "CLI Options (module):"
+        echo -e "  ${GREEN}--install${NC}        Install / Reinstall"
+        echo -e "  ${GREEN}--uninstall${NC}      Uninstall"
+        echo -e "  ${GREEN}--reinstall${NC}      Uninstall then Reinstall"
+        echo -e "  ${GREEN}--delete${NC}         Delete"
+        echo -e "  ${GREEN}--reset${NC}          Delete then Reinstall"
+    else
+        echo -e "CLI Options (theme):"
+        echo -e "  ${GREEN}--sync${NC}           Sync files"
+        echo -e "  ${GREEN}--install${NC}        Sync + Enable theme"
+        echo -e "  ${GREEN}--delete${NC}         Delete theme"
+        echo -e "  ${GREEN}--reset${NC}          Delete + Reinstall"
+    fi
+    echo -e "  ${GREEN}--restore${NC}        Restore a backup"
+    echo -e "  ${GREEN}--cache${NC}          Clear cache"
+    echo -e "  ${GREEN}--restart${NC}        Restart Docker Containers"
+    echo -e "  ${GREEN}--zip${NC}            Build zip archive"
     echo -e "  ${GREEN}--update-script${NC}  Update script"
-    echo -e "  ${GREEN}--help${NC}         Show this help"
+    echo -e "  ${GREEN}--help${NC}           Show this help"
     echo ""
 }
 
@@ -596,18 +742,35 @@ run_cli_action() {
 cd "${SCRIPT_DIR}"
 check_prerequisites
 
-case "${1:-}" in
-    --install)     run_cli_action "Install / Reinstall" action_install_reinstall ;;
-    --uninstall)   run_cli_action "Uninstall" action_uninstall ;;
-    --reinstall)   run_cli_action "Uninstall then Reinstall" action_uninstall_reinstall ;;
-    --delete)      run_cli_action "Delete" action_delete ;;
-    --reset)       run_cli_action "Delete then Reinstall" action_delete_reinstall ;;
-    --restore)     run_cli_action "Restore a backup" action_restore ;;
-    --cache)       run_cli_action "Clear cache" action_clear_cache ;;
-    --restart)     run_cli_action "Restart Docker Containers" action_restart_docker ;;
-    --zip)         run_cli_action "Build ZIP" action_build_zip ;;
-    --update-script) run_cli_action "Update script" action_update_script ;;
-    --help|-h)     show_help ;;
-    "")            run_menu ;;
-    *)             error_msg "Unknown option: $1. Use --help for help." ;;
-esac
+if [[ "$TYPE" == "module" ]]; then
+    case "${1:-}" in
+        --install)       run_cli_action "Install / Reinstall" action_module_install ;;
+        --uninstall)     run_cli_action "Uninstall" action_module_uninstall ;;
+        --reinstall)     run_cli_action "Uninstall then Reinstall" action_module_uninstall_reinstall ;;
+        --delete)        run_cli_action "Delete" action_module_delete ;;
+        --reset)         run_cli_action "Delete then Reinstall" action_module_delete_reinstall ;;
+        --restore)       run_cli_action "Restore a backup" action_restore ;;
+        --cache)         run_cli_action "Clear cache" action_clear_cache ;;
+        --restart)       run_cli_action "Restart Docker Containers" action_restart_docker ;;
+        --zip)           run_cli_action "Build ZIP" action_build_zip ;;
+        --update-script) run_cli_action "Update script" action_update_script ;;
+        --help|-h)       show_help ;;
+        "")              run_menu ;;
+        *)               error_msg "Unknown option: $1. Use --help for help." ;;
+    esac
+else
+    case "${1:-}" in
+        --sync)          run_cli_action "Sync files" action_theme_sync ;;
+        --install)       run_cli_action "Sync + Enable theme" action_theme_sync_enable ;;
+        --delete)        run_cli_action "Delete theme" action_theme_delete ;;
+        --reset)         run_cli_action "Delete + Reinstall" action_theme_delete_reinstall ;;
+        --restore)       run_cli_action "Restore a backup" action_restore ;;
+        --cache)         run_cli_action "Clear cache" action_clear_cache ;;
+        --restart)       run_cli_action "Restart Docker Containers" action_restart_docker ;;
+        --zip)           run_cli_action "Build ZIP" action_build_zip ;;
+        --update-script) run_cli_action "Update script" action_update_script ;;
+        --help|-h)       show_help ;;
+        "")              run_menu ;;
+        *)               error_msg "Unknown option: $1. Use --help for help." ;;
+    esac
+fi
