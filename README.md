@@ -15,6 +15,7 @@ A bash script to manage PrestaShop modules and themes in Docker environments.
 - Build production-ready ZIP archives
 - Auto-update from GitHub releases
 - CLI flags for automation/scripting
+- Generate module translation hashes (requires `generate_translations.php`)
 
 ## Requirements
 
@@ -71,6 +72,7 @@ Use arrow keys (or `j`/`k`) to navigate, Enter to select, `q` or Esc to quit.
 ./install.sh --reinstall    # Uninstall then Reinstall
 ./install.sh --delete       # Delete files
 ./install.sh --reset        # Delete then Reinstall
+./install.sh --translations # Update translation hashes
 ```
 
 ### CLI Mode (Theme)
